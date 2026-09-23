@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WorldCraft: Emberfield</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Pixelify+Sans:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="stage">
+    <header class="bar">
+      <h1>Emberfield</h1>
+      <p class="bar-meta">
+        <span id="tick">Waiting for the world</span>
+        <span id="conn" class="conn conn-down">Connecting</span>
+      </p>
+    </header>
+    <div class="map-wrap" id="mapWrap">
+      <canvas id="map" aria-label="Village map. Villagers are drawn as colored circles."></canvas>
+      <p class="map-empty" id="mapEmpty">Start the engine to see the village. The map appears as soon as the first snapshot arrives.</p>
+    </div>
+  </main>
+
+  <aside class="side">
+    <section aria-labelledby="h-villagers">
+      <h2 id="h-villagers">Villagers</h2>
+      <ul class="villagers" id="villagers"></ul>
+    </section>
+
+    <section aria-labelledby="h-market">
+      <h2 id="h-market">Market</h2>
+      <div class="market">
+        <div class="price"><span>Tool</span><strong id="pTool">–</strong></div>
+        <div class="price"><span>Ore</span><strong id="pOre">–</strong></div>
+        <div class="price"><span>Ore in mine</span><strong id="mineStock">–</strong></div>
+      </div>
+      <canvas id="spark" height="44" aria-label="Tool price over the last few minutes"></canvas>
+    </section>
+
+    <section class="chronicle-section" aria-labelledby="h-chronicle">
+      <h2 id="h-chronicle">Chronicle</h2>
+      <ol class="chronicle" id="chronicle">
+        <li class="empty">Nothing yet. Villagers start thinking a few seconds after the brain service starts.</li>
+      </ol>
+    </section>
+
+    <form class="order" id="orderForm" autocomplete="off">
+      <label for="orderAgent">Give an order to</label>
+      <div class="order-row">
+        <select id="orderAgent">
+          <option value="blacksmith">Brann, blacksmith</option>
+          <option value="miner">Tove, miner</option>
+          <option value="merchant">Wren, merchant</option>
+          <option value="all">Everyone</option>
+        </select>
+      </div>
+      <textarea id="orderText" rows="2" maxlength="500" placeholder="Stop forging and check whether tool prices are rising"></textarea>
+      <p class="order-error" id="orderError" role="alert"></p>
+      <button type="submit">Send order</button>
+    </form>
+  </aside>
+
+  <script src="app.js"></script>
+</body>
+</html>

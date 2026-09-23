@@ -1,0 +1,4 @@
+.env
+engine/build/
+brain/brain
+brain/gateway

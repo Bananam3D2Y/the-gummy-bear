@@ -1,0 +1,134 @@
+# Infrastructure for WorldCraft.
+#   docker compose up -d                      -> Kafka, Redis Stack, Prometheus, Grafana, exporter
+#   docker compose --profile app up -d --build -> also builds and runs engine, brain, gateway
+name: worldcraft
+
+services:
+  kafka:
+    image: apache/kafka:3.9.0
+    ports:
+      - "9092:9092"            # for services running on your host machine
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller   # KRaft mode: no ZooKeeper
+      KAFKA_LISTENERS: PLAINTEXT://:19092,CONTROLLER://:9093,PLAINTEXT_HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  # One-shot job that creates the topics, then exits.
+  kafka-init:
+    image: apache/kafka:3.9.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        T=/opt/kafka/bin/kafka-topics.sh
+        for t in world.events agent.actions overseer.commands agent.thoughts; do
+          $$T --bootstrap-server kafka:19092 --create --if-not-exists --topic $$t --partitions 3 --replication-factor 1
+        done
+        $$T --bootstrap-server kafka:19092 --create --if-not-exists --topic world.snapshots \
+            --partitions 1 --replication-factor 1 --config retention.ms=60000
+        $$T --bootstrap-server kafka:19092 --list
+
+  redis:
+    image: redis/redis-stack-server:latest   # Redis + the search module (vector search for RAG)
+    ports:
+      - "6379:6379"
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    command: ["--kafka.server=kafka:19092"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: on-failure
+    ports:
+      - "9308:9308"
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"    # lets Prometheus scrape services running on your host (Linux)
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin      # local dev only: no login screen
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/worldcraft.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+
+  # ---------------------------------------------------------------- app services (profile "app")
+
+  engine:
+    profiles: ["app"]
+    build: ../engine
+    environment:
+      KAFKA_BROKERS: kafka:19092
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "9100:9100"
+
+  brain:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: brain/Dockerfile
+      target: brain
+    env_file: ../.env
+    environment:
+      KAFKA_BROKERS: kafka:19092
+      REDIS_ADDR: redis:6379
+      OLLAMA_URL: http://host.docker.internal:11434/v1/
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    ports:
+      - "9101:9101"
+
+  gateway:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: brain/Dockerfile
+      target: gateway
+    environment:
+      KAFKA_BROKERS: kafka:19092
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+      - "9102:9102"

@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  # Services running natively on your machine (development).
+  - job_name: host
+    static_configs:
+      - targets: ["host.docker.internal:9100", "host.docker.internal:9101", "host.docker.internal:9102"]
+
+  # Services running inside docker compose (--profile app). Only one of these two jobs will be "up".
+  - job_name: compose
+    static_configs:
+      - targets: ["engine:9100", "brain:9101", "gateway:9102"]
+
+  - job_name: kafka
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
