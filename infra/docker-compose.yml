@@ -1,4 +1,4 @@
-# Infrastructure for WorldCraft.
+# Infrastructure for The Gummy Bear.
 #   docker compose up -d                      -> Kafka, Redis Stack, Prometheus, Grafana, exporter
 #   docker compose --profile app up -d --build -> also builds and runs engine, brain, gateway
 name: worldcraft
