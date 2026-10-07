@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"worldcraft/internal/agent"
+	"worldcraft/internal/cast"
 	"worldcraft/internal/kafkax"
 	"worldcraft/internal/llm"
 	"worldcraft/internal/memory"
@@ -47,11 +48,17 @@ func main() {
 		time.Sleep(time.Second)
 	}
 
+	crew, err := cast.Load(envOr("CAST_PATH", "../cast.json"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	client, err := llm.NewFromEnv()
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("LLM providers (in fallback order): %v", client.ProviderNames())
+	log.Printf("LLM primary chain:    %v", client.ProviderNames())
+	log.Printf("LLM background chain: %v", client.BackgroundNames())
 
 	store := rag.New(rdb, client)
 	go store.RunWriter(ctx)
@@ -65,22 +72,24 @@ func main() {
 	writer := kafkax.NewWriter(brokers)
 	defer writer.Close()
 
-	deps := &agent.Deps{LLM: client, Memory: memory.New(rdb), RAG: store, World: world, Writer: writer, Brokers: brokers}
+	deps := &agent.Deps{Cast: crew, LLM: client, Memory: memory.New(rdb), RAG: store,
+		World: world, Writer: writer, Brokers: brokers}
 	agents := map[string]*agent.Agent{}
-	for _, id := range []string{"miner", "blacksmith", "merchant"} {
-		a := agent.New(id, deps)
-		agents[id] = a
+	for _, ch := range crew.Characters {
+		a := agent.New(ch, deps)
+		agents[ch.ID] = a
 		go a.Run(ctx)
+		log.Printf("  %-10s %-18s tier=%s", ch.Name, ch.Role, ch.Tier)
 	}
-	go routeOverseer(ctx, brokers, agents)
+	go routeOverseer(ctx, brokers, agents, crew.IDs())
 
-	log.Printf("brain running with %d agents (RAG enabled: %v)", len(agents), store.Enabled())
+	log.Printf("%s open: %d on the crew (RAG enabled: %v)", crew.Restaurant, len(agents), store.Enabled())
 	<-ctx.Done()
 	log.Printf("brain shutting down")
 }
 
-// routeOverseer delivers chat commands from the browser to the right agent.
-func routeOverseer(ctx context.Context, brokers []string, agents map[string]*agent.Agent) {
+// routeOverseer delivers orders from the browser to the right character.
+func routeOverseer(ctx context.Context, brokers []string, agents map[string]*agent.Agent, everyone []string) {
 	r := kafkax.NewGroupReader(brokers, protocol.TopicOverseer, "brain-overseer")
 	defer r.Close()
 	for {
@@ -99,18 +108,22 @@ func routeOverseer(ctx context.Context, brokers []string, agents map[string]*age
 		}
 		targets := []string{cmd.AgentID}
 		if cmd.AgentID == "all" {
-			targets = []string{"miner", "blacksmith", "merchant"}
+			targets = everyone
 		}
 		for _, id := range targets {
 			a, ok := agents[id]
 			if !ok {
 				continue
 			}
+			lane := a.Orders()
+			if cmd.Kind == "chat" {
+				lane = a.Chats()
+			}
 			select {
-			case a.Orders() <- cmd:
-				log.Printf("[overseer] -> %s: %s", id, cmd.Text)
+			case lane <- cmd:
+				log.Printf("[overseer] -> %s (%s): %s", id, cmd.Kind, cmd.Text)
 			default:
-				log.Printf("[overseer] %s has too many pending orders, dropping", id)
+				log.Printf("[overseer] %s is backed up, dropping message", id)
 			}
 		}
 	}

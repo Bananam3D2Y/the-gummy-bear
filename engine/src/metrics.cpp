@@ -55,10 +55,14 @@ void Metrics::record_action(const ActionOutcome& o) {
   staleness_.observe(static_cast<double>(o.staleness_ticks));
 }
 
-void Metrics::set_gauges(size_t agents, int mine_stock, long tick, long parse_errors, long produce_errors) {
+void Metrics::set_gauges(size_t cooks, int stock, int open_tickets, long served, long walkouts,
+                         long tick, long parse_errors, long produce_errors) {
   std::lock_guard<std::mutex> lock(mu_);
-  agents_ = agents;
-  mine_stock_ = mine_stock;
+  cooks_ = cooks;
+  stock_ = stock;
+  open_tickets_ = open_tickets;
+  served_ = served;
+  walkouts_ = walkouts;
   tick_ = tick;
   parse_errors_ = parse_errors;
   produce_errors_ = produce_errors;
@@ -77,8 +81,15 @@ std::string Metrics::render() {
     os << "engine_actions_total{type=\"" << std::get<0>(k) << "\",result=\"" << std::get<1>(k)
        << "\",reason=\"" << std::get<2>(k) << "\"} " << v << "\n";
   }
-  os << "# TYPE engine_agents gauge\nengine_agents " << agents_ << "\n";
-  os << "# TYPE engine_mine_stock gauge\nengine_mine_stock " << mine_stock_ << "\n";
+  os << "# TYPE engine_agents gauge\nengine_agents " << cooks_ << "\n";
+  os << "# HELP engine_stock Portions of prep left in the walk-in.\n# TYPE engine_stock gauge\n"
+     << "engine_stock " << stock_ << "\n";
+  os << "# HELP engine_tickets_open Tickets waiting on the rail.\n# TYPE engine_tickets_open gauge\n"
+     << "engine_tickets_open " << open_tickets_ << "\n";
+  os << "# HELP engine_tickets_served_total Tickets served.\n# TYPE engine_tickets_served_total counter\n"
+     << "engine_tickets_served_total " << served_ << "\n";
+  os << "# HELP engine_walkouts_total Tables that gave up waiting.\n# TYPE engine_walkouts_total counter\n"
+     << "engine_walkouts_total " << walkouts_ << "\n";
   os << "# TYPE engine_current_tick gauge\nengine_current_tick " << tick_ << "\n";
   os << "# TYPE engine_kafka_parse_errors_total counter\nengine_kafka_parse_errors_total " << parse_errors_ << "\n";
   os << "# TYPE engine_kafka_produce_errors_total counter\nengine_kafka_produce_errors_total " << produce_errors_ << "\n";

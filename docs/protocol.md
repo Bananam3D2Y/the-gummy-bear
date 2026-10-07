@@ -1,12 +1,13 @@
-# WorldCraft message protocol
+# WorldCraft Kitchen message protocol
 
-All messages are JSON. Kafka keys are the agent ID (`miner`, `blacksmith`, `merchant`) except
+All messages are JSON. Kafka keys are the character ID from `cast.json`
+(`carmy`, `sydney`, `richie`, `tina`, `marcus`, `ebraheim`, `fak`), except
 `world.snapshots`, which uses the key `world`.
 
 | Topic | Producer | Consumer(s) | Partitions |
 |---|---|---|---|
 | `world.snapshots` | engine | gateway, brain (world view) | 1 |
-| `world.events` | engine | brain (one group per agent), gateway | 3 |
+| `world.events` | engine | brain (one group per character), gateway | 3 |
 | `agent.actions` | brain | engine | 3 |
 | `overseer.commands` | gateway | brain | 3 |
 | `agent.thoughts` | brain | gateway | 3 |
@@ -14,60 +15,73 @@ All messages are JSON. Kafka keys are the agent ID (`miner`, `blacksmith`, `merc
 ## Actions (brain -> engine, `agent.actions`)
 
 ```json
-{"type":"move_to","agent_id":"miner","target":"forge","based_on_tick":4120,"decision_id":"miner-1726"}
-{"type":"mine","agent_id":"miner","based_on_tick":4120}
-{"type":"craft","agent_id":"blacksmith","item":"tool","based_on_tick":4120}
-{"type":"give","agent_id":"miner","item":"ore","to":"blacksmith","based_on_tick":4120}
-{"type":"sell","agent_id":"merchant","item":"tool","based_on_tick":4120}
-{"type":"say","agent_id":"merchant","text":"Tools are selling high!","to":"blacksmith","based_on_tick":4120}
-{"type":"check_market","agent_id":"merchant","based_on_tick":4120}
+{"type":"move_to","agent_id":"tina","target":"line","based_on_tick":4120,"decision_id":"tina-1726"}
+{"type":"pull_stock","agent_id":"fak","based_on_tick":4120}
+{"type":"cook","agent_id":"tina","dish":"beef sandwich","based_on_tick":4120}
+{"type":"serve","agent_id":"carmy","dish":"beef sandwich","based_on_tick":4120}
+{"type":"hand","agent_id":"fak","item":"prep","to":"tina","based_on_tick":4120}
+{"type":"say","agent_id":"richie","text":"Cousin, two on the rail!","to":"carmy","based_on_tick":4120}
+{"type":"check_tickets","agent_id":"richie","based_on_tick":4120}
 ```
 
-`based_on_tick` is the world tick the agent was looking at when it decided. The engine measures
-`current_tick - based_on_tick` as staleness.
+Stations: `walkin`, `line`, `pass`, `alley`. Items: `prep` plus any dish on the menu.
+`based_on_tick` is the tick the character was looking at when it decided; the engine
+measures `current_tick - based_on_tick` as staleness.
 
 ## Events (engine -> brain, `world.events`)
 
-Every event carries `type`, `agent_id` (the agent who perceives it), `tick`, and `state`:
+Every event carries `type`, `agent_id` (who perceives it), `tick`, and `state`:
 
 ```json
-{"type":"arrived","agent_id":"miner","tick":4200,"location":"forge",
- "state":{"x":22,"y":15,"location":"forge","inventory":{"ore":2,"tool":0},"coins":10,"moving":false,"destination":""}}
+{"type":"arrived","agent_id":"tina","tick":4200,"location":"line",
+ "state":{"x":20,"y":14,"location":"line","inventory":{"prep":2},"coins":10,"moving":false,"destination":""}}
 ```
 
-| type | extra fields |
-|---|---|
-| `arrived` | `location` |
-| `action_result` | `action`, `detail` |
-| `action_rejected` | `action`, `reason`, `staleness_ticks` |
-| `heard` | `from`, `to`, `text` |
-| `received` | `from`, `item` |
-| `market_report` | `prices` {item: price}, `history` {item: [prices]} |
+| type | extra fields | who gets it |
+|---|---|---|
+| `arrived` | `location` | the character |
+| `action_result` | `action`, `detail` | the character |
+| `action_rejected` | `action`, `reason`, `staleness_ticks` | the character |
+| `heard` | `from`, `to`, `text` | everyone within 12 tiles |
+| `received` | `from`, `item` | the recipient |
+| `ticket_in` | `ticket_id`, `dish`, `open_tickets` | the expediter only |
+| `walkout` | `ticket_id`, `dish`, `walkouts` | the expediter only |
+| `ticket_report` | `tickets[]`, `stock`, `menu`, `served`, `walkouts` | whoever called `check_tickets` |
 
-Rejection reasons: `unknown_location`, `no_path`, `blocked`, `not_at_mine`, `mine_empty`,
-`unknown_recipe`, `not_at_forge`, `not_enough_ore`, `unknown_agent`, `item_missing`,
-`target_not_nearby`, `unknown_item`, `not_at_market`, `empty_text`, `unknown_action`.
+Ticket news goes only to the expediter so one new ticket costs one LLM call, not seven.
 
-## Overseer commands (gateway -> brain, `overseer.commands`)
+Rejection reasons: `unknown_station`, `no_path`, `blocked`, `not_at_walkin`, `out_of_stock`,
+`not_on_menu`, `not_at_line`, `not_enough_prep`, `not_at_pass`, `dish_missing`,
+`no_ticket_for_dish`, `unknown_agent`, `item_missing`, `target_not_nearby`, `empty_text`,
+`unknown_action`.
+
+## Orders from the Owner (gateway -> brain, `overseer.commands`)
 
 ```json
-{"agent_id":"blacksmith","text":"Stop forging and analyze the market","ts":1726990000000}
+{"agent_id":"carmy","text":"Clear the two oldest tickets before anything else","ts":1726990000000}
 ```
 `agent_id` may be `all`.
 
 ## Thoughts (brain -> gateway, `agent.thoughts`)
 
 ```json
-{"agent_id":"merchant","text":"Tool price is rising, hold stock.","tool":"wait","args":"{\"seconds\":10}",
- "tick":4300,"model":"gemini-2.5-flash-lite","latency_ms":1840,"retrieved":4,"ts":1726990000000}
+{"agent_id":"richie","text":"Rail's backing up, someone needs to fire the salad.","tool":"say",
+ "args":"{\"text\":\"Cousin, two on the rail!\",\"to\":\"carmy\"}","tick":4300,
+ "model":"gemini-3.5-flash-lite","latency_ms":1840,"retrieved":4,"ts":1726990000000}
 ```
 
 ## Snapshot (engine -> gateway, `world.snapshots`, 10 Hz)
 
 ```json
-{"type":"snapshot","tick":4300,"width":40,"height":30,"tiles":["####...", "..."],
- "landmarks":{"mine":[6,4],"forge":[22,14],"market":[33,22],"square":[20,20]},
- "mine_stock":4,"prices":{"ore":4.8,"tool":21.3},
- "agents":[{"id":"miner","role":"miner","x":6,"y":6,"location":"mine","destination":"",
-            "inventory":{"ore":1,"tool":0},"coins":10,"bubble":"","moving":false}]}
+{"type":"snapshot","tick":4300,"restaurant":"The Original Beef","width":40,"height":30,
+ "tiles":["####...","..."],
+ "landmarks":{"walkin":[5,6],"line":[20,13],"pass":[20,19],"alley":[34,5]},
+ "stock":7,"served":12,"walkouts":1,
+ "menu":["beef sandwich","chopped salad","fries","chocolate cake"],
+ "tickets":[{"id":9,"dish":"fries","waiting_s":41,"due_in_s":49}],
+ "agents":[{"id":"tina","name":"Tina","role":"line cook","color":"#8FBF6A","x":20,"y":14,
+            "location":"line","destination":"","inventory":{"prep":2},"coins":30,
+            "bubble":"","moving":false}]}
 ```
+
+Names and colors come from `cast.json` via the engine, so the frontend never hardcodes the cast.

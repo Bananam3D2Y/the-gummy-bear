@@ -12,11 +12,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/segmentio/kafka-go"
 
+	"worldcraft/internal/cast"
 	"worldcraft/internal/kafkax"
 	"worldcraft/internal/llm"
 	"worldcraft/internal/memory"
@@ -33,6 +36,7 @@ const (
 )
 
 type Deps struct {
+	Cast    *cast.Cast
 	LLM     *llm.Client
 	Memory  *memory.Store
 	RAG     *rag.Store
@@ -43,6 +47,7 @@ type Deps struct {
 
 type Agent struct {
 	ID string
+	me cast.Character
 	d  *Deps
 
 	// Unbuffered on purpose: while the agent is thinking, its Kafka reader
@@ -51,6 +56,7 @@ type Agent struct {
 	// reality this agent's perception is".
 	events chan protocol.Event
 	orders chan protocol.OverseerCommand
+	chats  chan protocol.OverseerCommand
 
 	lastTick      int64
 	pending       []string
@@ -59,17 +65,24 @@ type Agent struct {
 	idleFor       time.Duration
 }
 
-func New(id string, d *Deps) *Agent {
+func New(ch cast.Character, d *Deps) *Agent {
 	return &Agent{
-		ID: id, d: d,
+		ID: ch.ID, me: ch, d: d,
 		events:  make(chan protocol.Event),
 		orders:  make(chan protocol.OverseerCommand, 4),
+		chats:   make(chan protocol.OverseerCommand, 8),
 		idleFor: 5 * time.Second, // first decision shortly after startup
 	}
 }
 
-// Orders is where the overseer router delivers chat commands.
+// Orders is where standing instructions arrive; they go through the normal
+// decision loop so they shape what the character does next.
 func (a *Agent) Orders() chan<- protocol.OverseerCommand { return a.orders }
+
+// Chats is a separate lane. Questions are answered by their own goroutine on
+// the fast model chain, so you get a reply in about a second even if the
+// character is in the middle of a slow decision.
+func (a *Agent) Chats() chan<- protocol.OverseerCommand { return a.chats }
 
 // ---------------------------------------------------------------- perception
 
@@ -103,10 +116,13 @@ func (a *Agent) runReader(ctx context.Context) {
 	}
 }
 
-func describe(ev protocol.Event) string {
+// who is what this character calls someone, e.g. "Cousin" or "Chef".
+func (a *Agent) who(id string) string { return a.d.Cast.Calls(a.me, id) }
+
+func (a *Agent) describe(ev protocol.Event) string {
 	switch ev.Type {
 	case "arrived":
-		return fmt.Sprintf("You arrived at the %s.", ev.Location)
+		return fmt.Sprintf("You got to the %s.", ev.Location)
 	case "action_result":
 		return fmt.Sprintf("Your %s succeeded: %s.", ev.Action, ev.Detail)
 	case "action_rejected":
@@ -116,40 +132,54 @@ func describe(ev protocol.Event) string {
 		}
 		return s
 	case "heard":
-		to := ev.To
-		if to == "" {
-			to = "everyone"
+		to := "the kitchen"
+		if ev.To != "" && ev.To != "everyone" {
+			to = a.who(ev.To)
+			if ev.To == a.ID {
+				to = "you"
+			}
 		}
-		return fmt.Sprintf("%s said to %s: %q", ev.From, to, ev.Text)
+		return fmt.Sprintf("%s said to %s: %q", a.who(ev.From), to, ev.Text)
 	case "received":
-		return fmt.Sprintf("%s gave you 1 %s.", ev.From, ev.Item)
-	case "market_report":
-		var parts []string
-		for _, item := range []string{"ore", "tool"} {
-			h := ev.History[item]
-			if len(h) > 8 {
-				h = h[len(h)-8:]
-			}
-			trend := "flat"
-			if len(h) >= 2 {
-				switch diff := h[len(h)-1] - h[0]; {
-				case diff > 0.05*h[0]:
-					trend = "rising"
-				case diff < -0.05*h[0]:
-					trend = "falling"
-				}
-			}
-			parts = append(parts, fmt.Sprintf("%s %.2f coins (%s; recent %v)", item, ev.Prices[item], trend, h))
+		return fmt.Sprintf("%s handed you 1 %s.", a.who(ev.From), ev.Item)
+	case "menu_changed":
+		return fmt.Sprintf("%s put %q on the menu. Tickets can come in for it now.", ev.By, ev.Dish)
+	case "ticket_in":
+		return fmt.Sprintf("New ticket: %s. %d tickets on the rail now.", ev.Dish, ev.OpenTickets)
+	case "walkout":
+		return fmt.Sprintf("A table walked out waiting for %s. That is %d tonight.", ev.Dish, ev.Walkouts)
+	case "ticket_report":
+		if len(ev.Tickets) == 0 {
+			return fmt.Sprintf("The rail is clear. Walk-in has %d prep. Served %d, %d walkouts.",
+				ev.Stock, ev.Served, ev.Walkouts)
 		}
-		return "Market report: " + strings.Join(parts, "; ") + "."
+		lines := make([]string, 0, len(ev.Tickets))
+		for _, t := range ev.Tickets {
+			state := fmt.Sprintf("due in %ds", t.DueInS)
+			if t.DueInS <= 0 {
+				state = "LATE"
+			}
+			lines = append(lines, fmt.Sprintf("#%d %s (waiting %ds, %s)", t.ID, t.Dish, t.WaitingS, state))
+		}
+		return fmt.Sprintf("Rail: %s. Walk-in has %d prep. Served %d, %d walkouts.",
+			strings.Join(lines, "; "), ev.Stock, ev.Served, ev.Walkouts)
 	}
 	return ""
 }
 
 func (a *Agent) isTrigger(ev protocol.Event) bool {
 	if ev.Type == "heard" {
-		// Only speech aimed at you wakes you up; otherwise agents would talk forever.
-		return ev.To == a.ID || strings.Contains(strings.ToLower(ev.Text), a.ID)
+		// Only speech aimed at you wakes you up; otherwise the crew would talk forever.
+		if ev.To == a.ID {
+			return true
+		}
+		lower := strings.ToLower(ev.Text)
+		for _, name := range []string{a.ID, a.me.Name, a.d.Cast.Calls(a.me, a.ID)} {
+			if name != "" && strings.Contains(lower, strings.ToLower(name)) {
+				return true
+			}
+		}
+		return false
 	}
 	return true
 }
@@ -161,7 +191,7 @@ func (a *Agent) observe(ctx context.Context, ev protocol.Event) bool {
 	if t := a.d.World.Tick(); t > 0 {
 		metrics.PerceptionLagTicks.WithLabelValues(a.ID).Set(float64(t - ev.Tick))
 	}
-	text := describe(ev)
+	text := a.describe(ev)
 	if text == "" {
 		return false
 	}
@@ -173,7 +203,7 @@ func (a *Agent) observe(ctx context.Context, ev protocol.Event) bool {
 	}
 	// Worth keeping long-term: things that change what you know, not every footstep.
 	switch ev.Type {
-	case "heard", "received", "action_rejected", "market_report":
+	case "heard", "received", "action_rejected", "ticket_report", "walkout":
 		a.d.RAG.Remember(a.ID, ev.Tick, fmt.Sprintf("At tick %d: %s", ev.Tick, text))
 	}
 	return a.isTrigger(ev)
@@ -183,6 +213,7 @@ func (a *Agent) observe(ctx context.Context, ev protocol.Event) bool {
 
 func (a *Agent) Run(ctx context.Context) {
 	go a.runReader(ctx)
+	go a.chatLoop(ctx)
 	timer := time.NewTimer(a.idleFor)
 	defer timer.Stop()
 
@@ -222,8 +253,9 @@ func (a *Agent) Run(ctx context.Context) {
 			}
 
 		case cmd := <-a.orders:
+			// Questions never reach this lane; they are answered by chatLoop.
+			note := fmt.Sprintf("The Owner told you: %q", cmd.Text)
 			_ = a.d.Memory.SetField(ctx, a.ID, orderField, cmd.Text)
-			note := fmt.Sprintf("The Overseer ordered you: %q", cmd.Text)
 			a.pending = append(a.pending, note)
 			if a.d.Memory.AddObservation(ctx, a.ID, a.lastTick, note) == nil {
 				a.pendingStored++
@@ -263,25 +295,116 @@ func (a *Agent) buildPrompt(ctx context.Context) (string, int) {
 		a.lastTick = tick
 	}
 
-	fmt.Fprintf(&b, "TICK %d\n", a.lastTick)
+	if clock, phase := a.d.World.Clock(); clock != "" {
+		fmt.Fprintf(&b, "TIME: %s, %s.\n", clock, phase)
+	}
+	if tickets, stock := a.d.World.Rail(); len(tickets) > 0 || stock >= 0 {
+		if len(tickets) == 0 {
+			fmt.Fprintf(&b, "RAIL: clear, nothing waiting. Walk-in shelf (not in your hands): %d prep. "+
+				"This is your chance to take a breather: call wait, or talk to someone.\n", stock)
+		} else {
+			var parts []string
+			for _, t := range tickets {
+				state := fmt.Sprintf("due in %ds", t.DueInS)
+				if t.DueInS <= 0 {
+					state = "LATE"
+				}
+				parts = append(parts, fmt.Sprintf("#%d %s (%ds, %s)", t.ID, t.Dish, t.WaitingS, state))
+			}
+			late := 0
+			for _, t := range tickets {
+				if t.DueInS <= 0 {
+					late++
+				}
+			}
+			mood := "You have room to breathe."
+			switch {
+			case late > 0 || len(tickets) >= 4:
+				mood = "You are slammed. Be short with people. Still be accurate."
+			case len(tickets) >= 2:
+				mood = "Steady. Keep moving."
+			}
+			fmt.Fprintf(&b, "RAIL: %s. Walk-in shelf (not in your hands): %d prep. %s\n",
+				strings.Join(parts, "; "), stock, mood)
+		}
+	}
 	if known {
 		where := state.Location
 		if where == "" {
 			where = "on the road"
 		}
-		fmt.Fprintf(&b, "YOU: at %s (x=%d, y=%d)", where, state.X, state.Y)
+		fmt.Fprintf(&b, "YOU: at the %s (x=%d, y=%d)", where, state.X, state.Y)
 		if state.Moving && state.Destination != "" {
 			fmt.Fprintf(&b, ", currently walking to the %s", state.Destination)
 		}
-		fmt.Fprintf(&b, ". Inventory: ore=%d, tool=%d. Coins: %d.\n",
-			state.Inventory["ore"], state.Inventory["tool"], state.Coins)
+		var carrying []string
+		for item, n := range state.Inventory {
+			if n > 0 {
+				carrying = append(carrying, fmt.Sprintf("%d %s", n, item))
+			}
+		}
+		sort.Strings(carrying)
+		if len(carrying) == 0 {
+			carrying = []string{"nothing"}
+		}
+		fmt.Fprintf(&b, ". Hands: %s. Tips tonight: %d.\n", strings.Join(carrying, ", "), state.Coins)
 	} else {
 		b.WriteString("YOU: you just woke up and haven't looked around yet.\n")
 	}
 
+	// Deterministic hints. The models reliably confuse walk-in stock with what
+	// they are carrying, and forget which dish the rail is actually waiting on,
+	// so the brain works out the one legal move and states it outright.
+	if known {
+		prep := state.Inventory["prep"]
+		var dish string
+		for item, n := range state.Inventory {
+			if item != "prep" && n > 0 {
+				dish = item
+				break
+			}
+		}
+		tickets, _ := a.d.World.Rail()
+		oldest := ""
+		if len(tickets) > 0 {
+			oldest = tickets[0].Dish
+		}
+		wanted := false
+		for _, t := range tickets {
+			if t.Dish == dish {
+				wanted = true
+				break
+			}
+		}
+
+		b.WriteString("\nRIGHT NOW:\n")
+		switch {
+		case dish != "" && !wanted:
+			fmt.Fprintf(&b, "- Nobody has ordered the %s you are holding. Call bin with item=%q to scrape it, "+
+				"then work the rail.\n", dish, dish)
+		case dish != "" && state.Location == "pass":
+			fmt.Fprintf(&b, "- You are holding a %s at the pass and there is a ticket for it. Call serve with dish=%q.\n", dish, dish)
+		case dish != "":
+			fmt.Fprintf(&b, "- You are holding a %s and there is a ticket for it. Walk to the pass (move_to pass) and serve it.\n", dish)
+		case prep >= 2 && state.Location == "line" && oldest != "":
+			fmt.Fprintf(&b, "- You have enough prep and you are at the line. Call cook with dish=%q, the oldest ticket.\n", oldest)
+		case prep >= 2 && state.Location == "line":
+			b.WriteString("- You have enough prep and you are at the line, but nothing is on the rail. Wait for a ticket.\n")
+		case prep >= 2 && oldest != "":
+			fmt.Fprintf(&b, "- You have enough prep. Walk to the line (move_to line) and cook %q.\n", oldest)
+		case prep >= 2:
+			b.WriteString("- You have enough prep. Walk to the line (move_to line) and wait for a ticket.\n")
+		case state.Location == "walkin":
+			fmt.Fprintf(&b, "- You are carrying %d prep and you need 2. Call pull_stock again before you leave.\n", prep)
+		default:
+			fmt.Fprintf(&b, "- You are carrying %d prep, which is NOT enough to cook. The prep in the walk-in is not in your hands. "+
+				"Walk to the walk-in (move_to walkin) and pull_stock twice.\n", prep)
+		}
+	}
+
 	order := a.d.Memory.GetField(ctx, a.ID, orderField)
 	if order != "" {
-		fmt.Fprintf(&b, "\nOVERSEER ORDER (top priority until you call complete_order): %q\n", order)
+		fmt.Fprintf(&b, "\nORDER FROM THE OWNER (top priority until you call complete_order): %q\n", order)
 	}
 
 	b.WriteString("\nWHAT JUST HAPPENED:\n")
@@ -312,7 +435,14 @@ func (a *Agent) buildPrompt(ctx context.Context) (string, int) {
 			fmt.Fprintf(&b, "- [%s] %s\n", h.Kind, h.Text)
 		}
 	}
-	b.WriteString("\nChoose your next action.")
+	if chat := a.d.Memory.Chat(ctx, a.ID); len(chat) > 0 {
+		b.WriteString("\nYOUR CONVERSATION WITH THE OWNER (oldest first, continue it):\n")
+		for _, line := range chat {
+			b.WriteString("- " + line + "\n")
+		}
+	}
+
+	b.WriteString("\nWhat do you do next?")
 	return b.String(), len(hits)
 }
 
@@ -324,6 +454,151 @@ func (a *Agent) publishThought(ctx context.Context, t protocol.Thought) {
 	if err := kafkax.PublishJSON(ctx, a.d.Writer, protocol.TopicThoughts, a.ID, t); err != nil {
 		log.Printf("[%s] publish thought: %v", a.ID, err)
 	}
+}
+
+// chatLoop answers the Owner directly. It never touches the action pipeline,
+// so a question is answered while the character keeps working.
+func (a *Agent) chatLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case cmd := <-a.chats:
+			a.answer(ctx, cmd.Text)
+		}
+	}
+}
+
+func (a *Agent) answer(ctx context.Context, question string) {
+	start := time.Now()
+	_ = a.d.Memory.AddChat(ctx, a.ID, "Owner", question)
+
+	var b strings.Builder
+	state, _, known := a.d.World.State(a.ID)
+	if clock, phase := a.d.World.Clock(); clock != "" {
+		fmt.Fprintf(&b, "It is %s, %s.\n", clock, phase)
+	}
+	if known {
+		where := state.Location
+		if where == "" {
+			where = "crossing the kitchen"
+		}
+		fmt.Fprintf(&b, "You are at the %s.\n", where)
+	}
+	if tickets, stock := a.d.World.Rail(); len(tickets) > 0 {
+		late := 0
+		for _, t := range tickets {
+			if t.DueInS <= 0 {
+				late++
+			}
+		}
+		fmt.Fprintf(&b, "There are %d tickets on the rail (%d late) and %d prep in the walk-in.\n",
+			len(tickets), late, stock)
+	} else {
+		b.WriteString("The rail is clear right now.\n")
+	}
+	if chat := a.d.Memory.Chat(ctx, a.ID); len(chat) > 1 {
+		b.WriteString("\nYour conversation so far:\n")
+		for _, line := range chat {
+			b.WriteString("- " + line + "\n")
+		}
+	}
+	fmt.Fprintf(&b, "\nThe Owner says: %q\n\nAnswer them now, in your own voice.", question)
+
+	msgs := []llm.Message{
+		{Role: "system", Content: SystemPrompt(a.d.Cast, a.me) + "\n\n" + chatRules},
+		{Role: "user", Content: b.String()},
+	}
+	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	res, err := a.d.LLM.Chat(cctx, msgs, nil, "primary")
+	cancel()
+	if err != nil {
+		log.Printf("[%s] chat failed: %v", a.ID, err)
+		a.publishThought(ctx, protocol.Thought{Text: "(can't hear you over the rail right now)", Tool: "reply_to_owner"})
+		return
+	}
+	reply := strings.TrimSpace(res.Message.Content)
+	if reply == "" {
+		reply = "(no answer)"
+	}
+	_ = a.d.Memory.AddChat(ctx, a.ID, a.me.Name, reply)
+	a.d.RAG.Remember(a.ID, a.lastTick, "You told the Owner: "+reply)
+	log.Printf("[%s] answered the Owner (%s, %dms)", a.ID, res.Provider, time.Since(start).Milliseconds())
+	a.publishThought(ctx, protocol.Thought{Text: reply, Tool: "reply_to_owner",
+		Model: res.Model, LatencyMs: res.Latency.Milliseconds()})
+}
+
+// correct rewrites an action the kitchen would reject into the step that
+// actually gets the character closer to doing it. Small models keep trying to
+// cook with one portion of prep or serve from the wrong station; the engine
+// would reject those, so the brain fixes them before they are ever sent.
+func (a *Agent) correct(act protocol.Action) (protocol.Action, string) {
+	state, _, known := a.d.World.State(a.ID)
+	if !known {
+		return act, ""
+	}
+	tickets, _ := a.d.World.Rail()
+	prep := state.Inventory["prep"]
+	held := ""
+	for item, n := range state.Inventory {
+		if item != "prep" && n > 0 {
+			held = item
+			break
+		}
+	}
+	hasTicket := func(dish string) bool {
+		for _, t := range tickets {
+			if t.Dish == dish {
+				return true
+			}
+		}
+		return false
+	}
+	swap := func(to protocol.Action, why string) (protocol.Action, string) {
+		to.AgentID, to.BasedOnTick, to.DecisionID = act.AgentID, act.BasedOnTick, act.DecisionID
+		return to, why
+	}
+
+	switch act.Type {
+	case "cook":
+		if prep < 2 {
+			if state.Location == "walkin" {
+				return swap(protocol.Action{Type: "pull_stock"}, "only had "+strconv.Itoa(prep)+" prep, pulling instead")
+			}
+			return swap(protocol.Action{Type: "move_to", Target: "walkin"}, "no prep in hand, heading to the walk-in")
+		}
+		if state.Location != "line" {
+			return swap(protocol.Action{Type: "move_to", Target: "line"}, "not at the line yet")
+		}
+		if !hasTicket(act.Dish) && len(tickets) > 0 {
+			act.Dish = tickets[0].Dish
+			return act, "switched to the oldest ticket"
+		}
+	case "serve":
+		if held == "" {
+			return swap(protocol.Action{Type: "move_to", Target: "walkin"}, "nothing in hand to serve")
+		}
+		if !hasTicket(held) {
+			return swap(protocol.Action{Type: "bin", Item: held}, "nobody ordered that, binning it")
+		}
+		act.Dish = held
+		if state.Location != "pass" {
+			return swap(protocol.Action{Type: "move_to", Target: "pass"}, "not at the pass yet")
+		}
+	case "pull_stock":
+		if state.Location != "walkin" {
+			return swap(protocol.Action{Type: "move_to", Target: "walkin"}, "not at the walk-in yet")
+		}
+	}
+	return act, ""
+}
+
+// tier decides which model chain this character thinks on.
+func (a *Agent) tier() string {
+	if a.me.Tier == "" {
+		return "background"
+	}
+	return a.me.Tier
 }
 
 func (a *Agent) decide(ctx context.Context) {
@@ -338,18 +613,18 @@ func (a *Agent) decide(ctx context.Context) {
 
 	prompt, retrieved := a.buildPrompt(ctx)
 	msgs := []llm.Message{
-		{Role: "system", Content: Personas[a.ID] + "\n\n" + worldRules},
+		{Role: "system", Content: SystemPrompt(a.d.Cast, a.me)},
 		{Role: "user", Content: prompt},
 	}
 	a.pending = nil
 	a.pendingStored = 0
 
 	cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	res, err := a.d.LLM.Chat(cctx, msgs, Tools)
+	res, err := a.d.LLM.Chat(cctx, msgs, Tools(a.d.Cast, a.me, a.d.World.Menu()), a.tier())
 	cancel()
 	if err != nil {
 		log.Printf("[%s] LLM failed: %v", a.ID, err)
-		a.publishThought(ctx, protocol.Thought{Text: "(my mind is foggy: every model is unavailable right now)", Tool: "error"})
+		a.publishThought(ctx, protocol.Thought{Text: "(no answer from the kitchen brain: every model is unavailable)", Tool: "error"})
 		a.idleFor = 30 * time.Second
 		return
 	}
@@ -377,6 +652,33 @@ func (a *Agent) decide(ctx context.Context) {
 	case "wait":
 		a.idleFor = time.Duration(argInt(args, "seconds", 10)) * time.Second
 
+	case "create_dish":
+		recipe := argStr(args, "recipe")
+		dish := argStr(args, "dish")
+		act := protocol.Action{Type: "create_dish", AgentID: a.ID, BasedOnTick: a.lastTick,
+			DecisionID: fmt.Sprintf("%s-%d", a.ID, time.Now().UnixNano()), Dish: dish}
+		if err := kafkax.PublishJSON(ctx, a.d.Writer, protocol.TopicActions, a.ID, act); err != nil {
+			log.Printf("[%s] publish action: %v", a.ID, err)
+		}
+		// The recipe goes into shared memory, so any cook can retrieve it later.
+		a.d.RAG.RememberShared("recipe", a.lastTick,
+			fmt.Sprintf("Recipe for %q, created by %s: %s", dish, a.me.Name, recipe))
+		_ = a.d.Memory.AddObservation(ctx, a.ID, a.lastTick, "You created "+dish+": "+recipe)
+		a.idleFor = 3 * time.Second
+		if thought == "" {
+			thought = "Putting " + dish + " on the menu."
+		}
+		thought += " — " + recipe
+
+	case "reply_to_owner":
+		reply := argStr(args, "text")
+		_ = a.d.Memory.AddChat(ctx, a.ID, a.me.Name, reply)
+		note := "You told the Owner: " + reply
+		_ = a.d.Memory.AddObservation(ctx, a.ID, a.lastTick, note)
+		a.d.RAG.Remember(a.ID, a.lastTick, note)
+		a.idleFor = 2 * time.Second // straight back to work
+		thought = reply
+
 	case "complete_order":
 		summary := argStr(args, "summary")
 		_ = a.d.Memory.ClearField(ctx, a.ID, orderField)
@@ -394,11 +696,17 @@ func (a *Agent) decide(ctx context.Context) {
 		act := protocol.Action{
 			Type: name, AgentID: a.ID, BasedOnTick: a.lastTick,
 			DecisionID: fmt.Sprintf("%s-%d", a.ID, time.Now().UnixNano()),
-			Target:     argStr(args, "target"), Item: argStr(args, "item"),
+			Target:     argStr(args, "target"), Item: argStr(args, "item"), Dish: argStr(args, "dish"),
 			To: argStr(args, "to"), Text: argStr(args, "text"),
 		}
 		if act.To == "everyone" {
 			act.To = ""
+		}
+		if fixed, why := a.correct(act); why != "" {
+			log.Printf("[%s] corrected %s -> %s (%s)", a.ID, act.Type, fixed.Type, why)
+			act = fixed
+			name = act.Type
+			thought += " (" + why + ")"
 		}
 		if err := kafkax.PublishJSON(ctx, a.d.Writer, protocol.TopicActions, a.ID, act); err != nil {
 			log.Printf("[%s] publish action: %v", a.ID, err)

@@ -108,7 +108,7 @@ var upgrader = websocket.Upgrader{
 }
 
 type inbound struct {
-	Type    string `json:"type"`
+	Type    string `json:"type"` // "order" or "chat"
 	AgentID string `json:"agent_id"`
 	Text    string `json:"text"`
 }
@@ -147,13 +147,13 @@ func serveWS(ctx context.Context, h *hub, publish func(protocol.OverseerCommand)
 			if err := conn.ReadJSON(&msg); err != nil {
 				return
 			}
-			if msg.Type != "order" || msg.Text == "" || msg.AgentID == "" {
+			if (msg.Type != "order" && msg.Type != "chat") || msg.Text == "" || msg.AgentID == "" {
 				continue
 			}
 			if len(msg.Text) > 500 {
 				msg.Text = msg.Text[:500]
 			}
-			cmd := protocol.OverseerCommand{AgentID: msg.AgentID, Text: msg.Text, TS: time.Now().UnixMilli()}
+			cmd := protocol.OverseerCommand{AgentID: msg.AgentID, Text: msg.Text, Kind: msg.Type, TS: time.Now().UnixMilli()}
 			if err := publish(cmd); err != nil {
 				log.Printf("[gateway] publish order: %v", err)
 				continue

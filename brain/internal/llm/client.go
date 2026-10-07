@@ -89,6 +89,7 @@ type Result struct {
 
 type Client struct {
 	providers  []*Provider
+	background []*Provider
 	embedder   *Provider
 	embedLimit *ratelimit.Limiter
 	http       *http.Client
@@ -154,6 +155,17 @@ func NewFromEnv() (*Client, error) {
 		return nil, errors.New("no LLM provider configured: set GEMINI_API_KEY and/or GROQ_API_KEY in .env")
 	}
 
+	// Background characters think on cheaper/local models first, so the whole
+	// crew fits inside a free tier. Falls back to the primary chain.
+	for _, name := range strings.Split(envOr("LLM_BACKGROUND_PROVIDERS", "ollama,groq,gemini"), ",") {
+		if p, ok := all[strings.TrimSpace(name)]; ok {
+			c.background = append(c.background, p)
+		}
+	}
+	if len(c.background) == 0 {
+		c.background = c.providers
+	}
+
 	if p, ok := all[envOr("EMBED_PROVIDER", "gemini")]; ok && p.EmbedModel != "" {
 		c.embedder = p
 		c.embedLimit = ratelimit.New(envInt("EMBED_RPM", 60))
@@ -164,8 +176,16 @@ func NewFromEnv() (*Client, error) {
 func (c *Client) CanEmbed() bool { return c.embedder != nil }
 
 func (c *Client) ProviderNames() []string {
+	return names(c.providers)
+}
+
+func (c *Client) BackgroundNames() []string {
+	return names(c.background)
+}
+
+func names(ps []*Provider) []string {
 	var n []string
-	for _, p := range c.providers {
+	for _, p := range ps {
 		n = append(n, p.Name+"("+p.Model+")")
 	}
 	return n
@@ -209,9 +229,14 @@ func (c *Client) post(ctx context.Context, p *Provider, path string, body any, o
 
 // Chat sends one request with tools, trying each provider in order.
 // Rate limits (429), server errors (5xx) and network errors move on to the next provider.
-func (c *Client) Chat(ctx context.Context, msgs []Message, tools []Tool) (*Result, error) {
+// tier is "primary" (the characters you interact with) or "background" (everyone else).
+func (c *Client) Chat(ctx context.Context, msgs []Message, tools []Tool, tier string) (*Result, error) {
+	chain := c.providers
+	if tier == "background" {
+		chain = c.background
+	}
 	var lastErr error
-	for _, p := range c.providers {
+	for _, p := range chain {
 		waited, err := p.limiter.Wait(ctx)
 		metrics.RateLimitWait.WithLabelValues(p.Name).Observe(waited.Seconds())
 		if err != nil {

@@ -36,7 +36,8 @@ class Metrics {
 
   void observe_tick(double seconds);
   void record_action(const ActionOutcome& o);
-  void set_gauges(size_t agents, int mine_stock, long tick, long parse_errors, long produce_errors);
+  void set_gauges(size_t cooks, int stock, int open_tickets, long served, long walkouts,
+                  long tick, long parse_errors, long produce_errors);
   std::string render();
 
  private:
@@ -45,8 +46,11 @@ class Metrics {
   Histogram staleness_;
   long ticks_ = 0;
   std::map<std::tuple<std::string, std::string, std::string>, long> actions_;
-  size_t agents_ = 0;
-  int mine_stock_ = 0;
+  size_t cooks_ = 0;
+  int stock_ = 0;
+  int open_tickets_ = 0;
+  long served_ = 0;
+  long walkouts_ = 0;
   long tick_ = 0;
   long parse_errors_ = 0;
   long produce_errors_ = 0;

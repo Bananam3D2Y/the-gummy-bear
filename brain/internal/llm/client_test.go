@@ -23,7 +23,7 @@ func TestFallback(t *testing.T) {
 	c := &Client{http: http.DefaultClient, providers: []*Provider{{Name: "a", BaseURL: bad.URL + "/", Model: "m", limiter: ratelimit.New(600)}, {Name: "b", BaseURL: good.URL + "/", Model: "m2", EmbedModel: "e", limiter: ratelimit.New(600)}}}
 	c.embedder = c.providers[1]
 	c.embedLimit = ratelimit.New(600)
-	res, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	res, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, "primary")
 	if err != nil || res.Provider != "b" || res.Message.ToolCalls[0].Function.Name != "mine" {
 		t.Fatal(err, res)
 	}

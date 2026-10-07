@@ -1,4 +1,13 @@
+# Secrets
 .env
+
+# Build output
 engine/build/
 brain/brain
 brain/gateway
+
+# macOS and editors
+.DS_Store
+.vscode/
+.idea/
+*.zip

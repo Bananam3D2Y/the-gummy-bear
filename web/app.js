@@ -3,20 +3,22 @@
 
   // ------------------------------------------------------------ constants
 
-  const SNAPSHOT_MS = 100; // engine publishes a snapshot every 100 ms
-  const MOVE_MS = 200;     // agents step one tile every 200 ms; interpolate across that
-  const NAMES = { miner: "Tove", blacksmith: "Brann", merchant: "Wren" };
-  const COLORS = { miner: "#f0c05a", blacksmith: "#e0644f", merchant: "#7fc8d8" };
+  const MOVE_MS = 200; // cooks step one tile every 200 ms; interpolate across that
+  const NAMES = {};    // filled from the snapshot (engine reads cast.json)
+  const COLORS = {};
   const TILE = {
-    ".": "#5e7f45", "=": "#b39b6e", "~": "#3f6f8f", "#": "#5e7f45", "^": "#6f6a60",
-    "B": "#7a4f36", "M": "#4a4640", "F": "#b5562e", "K": "#c9a24a", "S": "#a89f8a",
+    ".": "#2f3a42", "=": "#3c4a53", "#": "#1a2228", "B": "#6a4a35",
+    "W": "#4d6b78", "L": "#8c3f2c", "P": "#b08a3c", "A": "#374048",
   };
-  const LANDMARKS = { mine: "Mine", forge: "Forge", market: "Market", square: "Square" };
+  const LANDMARKS = { walkin: "Walk-in", line: "The Line", pass: "The Pass", alley: "Alley" };
   const REASONS = {
-    mine_empty: "the mine is empty", not_at_mine: "not at the mine", not_at_forge: "not at the forge",
-    not_at_market: "not at the market", not_enough_ore: "not enough ore", item_missing: "doesn't have that item",
-    target_not_nearby: "too far away to hand it over", blocked: "the path is blocked", no_path: "no path there",
-    unknown_location: "no such place", unknown_action: "unknown action",
+    out_of_stock: "the walk-in is empty", not_at_walkin: "not at the walk-in",
+    not_at_line: "not at the line", not_at_pass: "not at the pass",
+    not_enough_prep: "not enough prep", not_on_menu: "that is not on the menu",
+    dish_missing: "doesn't have that dish", no_ticket_for_dish: "no ticket for that dish",
+    item_missing: "doesn't have that", target_not_nearby: "too far away to hand it over",
+    blocked: "the path is blocked", no_path: "no way through",
+    unknown_station: "no such station", unknown_action: "unknown action",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -25,14 +27,15 @@
 
   // ------------------------------------------------------------ state
 
-  let world = null;          // latest snapshot
-  let staticLayer = null;    // pre-rendered terrain, redrawn only on resize
+  let world = null;
+  let staticLayer = null;
   let staticKey = "";
   let tileSize = 16;
-  let selected = "blacksmith";
-  const agents = new Map();  // id -> { fx, fy, tx, ty, t0, data }
-  const priceHistory = [];
-  let lastPriceSample = 0;
+  let selected = "";
+  let unread = 0;
+  const agents = new Map();   // id -> { fx, fy, tx, ty, t0, data }
+  const threads = {};         // id -> [{ side, text }]
+  const orders = {};          // id -> current standing order
 
   // ------------------------------------------------------------ snapshots
 
@@ -44,27 +47,28 @@
   function applySnapshot(s) {
     world = s;
     $("mapEmpty").hidden = true;
-    $("tick").textContent = `Tick ${s.tick.toLocaleString()}, ${Math.floor(s.tick / 20)}s in`;
+    $("tick").textContent = `Tick ${s.tick.toLocaleString()}`;
+    if (s.restaurant) document.title = $("restaurant").textContent = s.restaurant;
+    if (s.clock) $("clock").textContent = `${s.clock}${s.phase ? ", " + s.phase : ""}`;
 
     const now = performance.now();
     for (const a of s.agents) {
+      NAMES[a.id] = a.name || a.id;
+      COLORS[a.id] = a.color || "#dddddd";
       const prev = agents.get(a.id);
       if (!prev) {
         agents.set(a.id, { fx: a.x, fy: a.y, tx: a.x, ty: a.y, t0: now, data: a });
       } else {
-        // Start the next glide from wherever the agent is drawn right now.
         const p = currentPos(prev, now);
         Object.assign(prev, { fx: p.x, fy: p.y, tx: a.x, ty: a.y, t0: now, data: a });
       }
     }
+    if (!selected && s.agents.length) selected = s.agents[0].id;
 
     const key = `${s.width}x${s.height}:${s.tiles.join("")}`;
-    if (key !== staticKey) {
-      staticKey = key;
-      resize();
-    }
-    updateMarket(s, now);
-    renderVillagers();
+    if (key !== staticKey) { staticKey = key; resize(); }
+    updateService(s);
+    renderCrew();
   }
 
   // ------------------------------------------------------------ map drawing
@@ -84,7 +88,6 @@
     buildStaticLayer(w, h, dpr);
   }
 
-  // Cheap deterministic noise so the grass isn't a flat color.
   const shade = (x, y) => ((x * 73856093) ^ (y * 19349663)) % 7;
 
   function buildStaticLayer(w, h, dpr) {
@@ -101,34 +104,48 @@
         const c = row[x];
         g.fillStyle = TILE[c] || TILE["."];
         g.fillRect(x * T, y * T, T, T);
-        if (c === "." || /\d/.test(c)) {
-          if (shade(x, y) === 0) { g.fillStyle = "#678a4c"; g.fillRect(x * T + T * 0.3, y * T + T * 0.4, T * 0.15, T * 0.3); }
-        } else if (c === "#") {
-          g.fillStyle = "#2e4a2a";
-          g.beginPath(); g.arc(x * T + T / 2, y * T + T / 2, T * 0.46, 0, Math.PI * 2); g.fill();
-        } else if (c === "~" && shade(x, y) < 2) {
-          g.fillStyle = "#5287a6"; g.fillRect(x * T + T * 0.2, y * T + T * 0.5, T * 0.5, Math.max(1, T * 0.08));
-        } else if (c === "B") {
-          g.fillStyle = "#5c3a28"; g.fillRect(x * T, y * T + T * 0.75, T, T * 0.25);
-        } else if (c === "^") {
-          g.fillStyle = "#57534b"; g.fillRect(x * T + T * 0.15, y * T + T * 0.2, T * 0.6, T * 0.55);
+        if (c === "B") {
+          g.fillStyle = "#8a6549";
+          g.fillRect(x * T, y * T, T, Math.max(1, T * 0.18));
+        } else if (c === "L") {
+          g.fillStyle = "#f0b04a";
+          g.beginPath(); g.arc(x * T + T / 2, y * T + T / 2, T * 0.22, 0, Math.PI * 2); g.fill();
+        } else if (c === "P") {
+          g.fillStyle = "#f2d78a";
+          g.fillRect(x * T + T * 0.15, y * T + T * 0.1, T * 0.7, T * 0.16);
+        } else if ((c === "." || /\d/.test(c)) && shade(x, y) === 0) {
+          g.fillStyle = "#354049";
+          g.fillRect(x * T + T * 0.35, y * T + T * 0.35, T * 0.3, T * 0.3);
         }
       }
     }
 
+    // warm light under the heat lamp and over the burners
+    for (const key of ["pass", "line"]) {
+      const spot = world.landmarks[key];
+      if (!spot) continue;
+      const cx = spot[0] * T + T / 2;
+      const cy = spot[1] * T + T / 2;
+      const lamp = g.createRadialGradient(cx, cy, T * 0.5, cx, cy, T * 4.5);
+      lamp.addColorStop(0, key === "pass" ? "rgba(242,215,138,0.20)" : "rgba(240,176,74,0.16)");
+      lamp.addColorStop(1, "transparent");
+      g.fillStyle = lamp;
+      g.fillRect(cx - T * 4.5, cy - T * 4.5, T * 9, T * 9);
+    }
+
     g.font = `600 ${Math.max(11, Math.round(T * 0.75))}px "Pixelify Sans", monospace`;
     g.textAlign = "center";
-    for (const [name, [lx, ly]] of Object.entries(world.landmarks)) {
+    for (const [name, spot] of Object.entries(world.landmarks)) {
       const label = LANDMARKS[name] || name;
-      const cx = lx * T + T / 2;
-      const cy = ly * T - T * 0.35;
-      g.lineWidth = 3; g.strokeStyle = "rgba(20,28,34,0.85)"; g.strokeText(label, cx, cy);
+      const cx = spot[0] * T + T / 2;
+      const cy = spot[1] * T - T * 0.35;
+      g.lineWidth = 3; g.strokeStyle = "rgba(10,14,18,0.85)"; g.strokeText(label, cx, cy);
       g.fillStyle = "#f3eee0"; g.fillText(label, cx, cy);
     }
   }
 
   function wrapText(text, maxWidth) {
-    const words = text.split(/\s+/);
+    const words = String(text).split(/\s+/);
     const lines = [];
     let line = "";
     for (const w of words) {
@@ -147,9 +164,8 @@
     const lh = Math.max(13, T * 0.85);
     const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 14;
     const h = lines.length * lh + 10;
-    const cw = world.width * T;
-    let x = Math.min(Math.max(4, px - w / 2), cw - w - 4);
-    let y = Math.max(4, py - T * 0.9 - h);
+    const x = Math.min(Math.max(4, px - w / 2), world.width * T - w - 4);
+    const y = Math.max(4, py - T * 0.9 - h);
 
     ctx.fillStyle = "rgba(243,238,224,0.96)";
     ctx.beginPath(); ctx.roundRect(x, y, w, h, 5); ctx.fill();
@@ -176,22 +192,27 @@
       const py = p.y * T + T / 2;
       drawn.push({ a, px, py });
 
+      const glow = ctx.createRadialGradient(px, py, T * 0.2, px, py, T * 1.1);
+      glow.addColorStop(0, (COLORS[id] || "#ddd") + "44");
+      glow.addColorStop(1, "transparent");
+      ctx.fillStyle = glow;
+      ctx.fillRect(px - T * 1.1, py - T * 1.1, T * 2.2, T * 2.2);
+
       if (id === selected) {
         ctx.strokeStyle = "#e8a33d"; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(px, py, T * 0.72, 0, Math.PI * 2); ctx.stroke();
       }
       ctx.fillStyle = COLORS[id] || "#ddd";
-      ctx.strokeStyle = "#1b2631"; ctx.lineWidth = 2;
+      ctx.strokeStyle = "#11171b"; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(px, py, T * 0.45, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
 
       ctx.font = `600 ${Math.max(11, Math.round(T * 0.65))}px "Pixelify Sans", monospace`;
       ctx.textAlign = "center";
-      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(20,28,34,0.85)";
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(10,14,18,0.85)";
       ctx.strokeText(NAMES[id] || id, px, py + T * 1.25);
       ctx.fillStyle = "#f3eee0";
       ctx.fillText(NAMES[id] || id, px, py + T * 1.25);
     }
-    // Bubbles last so they sit on top of every agent.
     for (const { a, px, py } of drawn) if (a.data.bubble) drawBubble(a.data.bubble, px, py);
   }
 
@@ -209,86 +230,182 @@
     if (best) select(best);
   });
 
-  // ------------------------------------------------------------ sidebar
+  // ------------------------------------------------------------ crew list
 
-  function select(id) {
-    selected = id;
-    $("orderAgent").value = id;
-    renderVillagers();
-    $("orderText").focus();
+  const crewEls = new Map();
+
+  function fillOrderOptions() {
+    const sel = $("orderAgent");
+    const ids = [...agents.keys()];
+    if (sel.options.length === ids.length + 1) return;
+    sel.innerHTML = "";
+    for (const id of ids) {
+      const o = document.createElement("option");
+      o.value = id;
+      const role = agents.get(id).data.role || "";
+      o.textContent = role ? `${NAMES[id]}, ${role}` : NAMES[id];
+      sel.appendChild(o);
+    }
+    const all = document.createElement("option");
+    all.value = "all";
+    all.textContent = "The whole kitchen";
+    sel.appendChild(all);
+    if (ids.includes(selected)) sel.value = selected;
   }
 
-  $("orderAgent").addEventListener("change", (e) => { selected = e.target.value; renderVillagers(); });
-
-  const villagerEls = new Map();
-  const orders = {}; // id -> last order text, cleared when the agent reports completion
-
-  function renderVillagers() {
+  function renderCrew() {
     const list = $("villagers");
-    for (const id of ["miner", "blacksmith", "merchant"]) {
+    fillOrderOptions();
+    for (const id of agents.keys()) {
       const a = agents.get(id);
-      let el = villagerEls.get(id);
+      let el = crewEls.get(id);
       if (!el) {
         el = document.createElement("li");
         el.className = "villager";
         el.tabIndex = 0;
         el.innerHTML = `<span class="dot"></span><span class="name"></span><span class="inv"></span><span class="doing"></span>`;
         el.querySelector(".dot").style.background = COLORS[id];
-        el.querySelector(".name").textContent = `${NAMES[id]}, ${id}`;
+        el.querySelector(".name").textContent = `${NAMES[id]}, ${a.data.role || ""}`.replace(/, $/, "");
         el.addEventListener("click", () => select(id));
-        el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(id); } });
+        el.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(id); }
+        });
         list.appendChild(el);
-        villagerEls.set(id, el);
+        crewEls.set(id, el);
       }
       el.classList.toggle("selected", id === selected);
-      if (!a) continue;
       const d = a.data;
-      el.querySelector(".inv").textContent = `${d.inventory.ore} ore, ${d.inventory.tool} tools, ${d.coins} coins`;
+      const carrying = Object.entries(d.inventory || {}).filter(([, n]) => n > 0)
+        .map(([item, n]) => `${n} ${item}`).join(", ");
+      el.querySelector(".inv").textContent = carrying ? `${carrying}, ${d.coins} tips` : `${d.coins} tips`;
       const doing = el.querySelector(".doing");
       if (orders[id]) {
         doing.textContent = `Order: ${orders[id]}`;
         doing.classList.add("has-order");
       } else {
         doing.classList.remove("has-order");
-        doing.textContent = d.moving && d.destination ? `Walking to the ${d.destination}`
-          : d.location ? `At the ${d.location}` : "On the road";
+        doing.textContent = d.moving && d.destination
+          ? `Heading to the ${LANDMARKS[d.destination] || d.destination}`
+          : d.location ? `At the ${LANDMARKS[d.location] || d.location}` : "Crossing the kitchen";
       }
     }
   }
 
-  function updateMarket(s, now) {
-    $("pTool").textContent = s.prices.tool.toFixed(1);
-    $("pOre").textContent = s.prices.ore.toFixed(1);
-    $("mineStock").textContent = s.mine_stock;
-    if (now - lastPriceSample > 2000) {
-      lastPriceSample = now;
-      priceHistory.push(s.prices.tool);
-      if (priceHistory.length > 90) priceHistory.shift();
-      drawSpark();
+  function select(id) {
+    selected = id;
+    $("orderAgent").value = id;
+    renderCrew();
+    updateChatWith();
+    renderThread(id);
+    $("orderText").focus();
+  }
+
+  // ------------------------------------------------------------ service panel
+
+  function updateService(s) {
+    $("served").textContent = s.served ?? 0;
+    $("walkouts").textContent = s.walkouts ?? 0;
+    $("stock").textContent = s.stock ?? 0;
+
+    const rail = $("rail");
+    const tickets = s.tickets || [];
+    rail.innerHTML = "";
+    if (!tickets.length) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "Rail is clear.";
+      rail.appendChild(li);
+    }
+    for (const t of tickets) {
+      const li = document.createElement("li");
+      li.className = t.due_in_s <= 0 ? "ticket late" : t.due_in_s < 30 ? "ticket soon" : "ticket";
+      const dish = document.createElement("span");
+      dish.className = "dish";
+      dish.textContent = `#${t.id} ${t.dish}`;
+      const age = document.createElement("span");
+      age.className = "age";
+      age.textContent = t.due_in_s <= 0 ? `LATE ${-t.due_in_s}s` : `${t.waiting_s}s`;
+      li.append(dish, age);
+      rail.appendChild(li);
+    }
+
+    const menu = $("menu");
+    if (s.menu && menu.dataset.len !== String(s.menu.length)) {
+      const known = new Set((menu.dataset.known || "").split("|").filter(Boolean));
+      const first = menu.dataset.len === undefined;
+      menu.dataset.len = String(s.menu.length);
+      menu.innerHTML = "";
+      for (const dish of s.menu) {
+        const chip = document.createElement("span");
+        chip.className = !first && !known.has(dish) ? "chip chip-new" : "chip";
+        chip.textContent = dish;
+        menu.appendChild(chip);
+      }
+      menu.dataset.known = s.menu.join("|");
     }
   }
 
-  function drawSpark() {
-    const c = $("spark");
-    const dpr = window.devicePixelRatio || 1;
-    const w = c.clientWidth;
-    const h = 44;
-    c.width = w * dpr; c.height = h * dpr;
-    const g = c.getContext("2d");
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    if (priceHistory.length < 2) return;
-    const min = Math.min(...priceHistory) - 0.5;
-    const max = Math.max(...priceHistory) + 0.5;
-    g.strokeStyle = "#e8a33d"; g.lineWidth = 2; g.beginPath();
-    priceHistory.forEach((v, i) => {
-      const x = (i / (priceHistory.length - 1)) * (w - 2) + 1;
-      const y = h - 3 - ((v - min) / (max - min)) * (h - 6);
-      i ? g.lineTo(x, y) : g.moveTo(x, y);
-    });
-    g.stroke();
+  // ------------------------------------------------------------ tabs, chronicle, chat
+
+  const chatVisible = () => !$("chatSection").hidden;
+
+  function showTab(which) {
+    const chat = which === "chat";
+    $("chatSection").hidden = !chat;
+    $("chronicleSection").hidden = chat;
+    $("tabChat").classList.toggle("active", chat);
+    $("tabChronicle").classList.toggle("active", !chat);
+    $("tabChat").setAttribute("aria-selected", String(chat));
+    $("tabChronicle").setAttribute("aria-selected", String(!chat));
+    if (chat) {
+      unread = 0;
+      $("chatBadge").classList.remove("on");
+      renderThread(selected);
+    }
   }
 
-  // ------------------------------------------------------------ chronicle
+  function updateChatWith() {
+    $("chatWith").textContent = NAMES[selected] ? `with ${NAMES[selected]}` : "";
+  }
+
+  function renderThread(id) {
+    const list = $("chat");
+    list.innerHTML = "";
+    const thread = threads[id] || [];
+    if (!thread.length) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = `No conversation with ${NAMES[id] || "them"} yet. Ask them something.`;
+      list.appendChild(li);
+      return;
+    }
+    for (const m of thread) {
+      const li = document.createElement("li");
+      li.className = m.side === "owner" ? "from-owner" : "from-cook";
+      const who = document.createElement("span");
+      who.className = "speaker";
+      who.textContent = m.side === "owner" ? "You" : NAMES[id] || id;
+      if (m.side !== "owner" && COLORS[id]) who.style.color = COLORS[id];
+      const body = document.createElement("span");
+      body.textContent = m.text;
+      li.append(who, body);
+      list.appendChild(li);
+    }
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function addChat(side, who, text) {
+    if (!who) return;
+    (threads[who] = threads[who] || []).push({ side, text });
+    while (threads[who].length > 40) threads[who].shift();
+    if (who === selected) renderThread(who);
+    if (!(who === selected && chatVisible())) {
+      unread++;
+      const b = $("chatBadge");
+      b.textContent = unread;
+      b.classList.add("on");
+    }
+  }
 
   function addEntry(cls, who, what, tag) {
     const list = $("chronicle");
@@ -314,39 +431,54 @@
     while (list.children.length > 150) list.lastChild.remove();
   }
 
+  function argOf(t, key) {
+    try { return JSON.parse(t.args || "{}")[key] || ""; } catch { return ""; }
+  }
+
   function onThought(t) {
-    if (t.tool === "error") { addEntry("rejected", t.agent_id, t.text); return; }
-    if (t.tool === "complete_order") { delete orders[t.agent_id]; renderVillagers(); }
-    let args = "";
-    try {
-      const parsed = JSON.parse(t.args || "{}");
-      args = Object.values(parsed).filter((v) => typeof v !== "object").join(", ");
-    } catch { /* ignore */ }
-    if (t.tool === "say") {
-      addEntry("speech", t.agent_id, `says "${(JSON.parse(t.args || "{}").text) || ""}"`, `${(t.latency_ms / 1000).toFixed(1)}s`);
+    if (!t || !t.agent_id) return;
+    const secs = ((t.latency_ms || 0) / 1000).toFixed(1);
+
+    if (t.tool === "reply_to_owner") { addChat("cook", t.agent_id, t.text || "(no answer)"); return; }
+    if (t.tool === "error") { addEntry("rejected", t.agent_id, t.text || "(brain offline)"); return; }
+    if (t.tool === "create_dish") {
+      addEntry("recipe", t.agent_id, `put ${argOf(t, "dish")} on the menu. ${t.text || ""}`);
       return;
     }
-    const tag = `${t.tool}${args ? ` ${args}` : ""}, ${(t.latency_ms / 1000).toFixed(1)}s${t.retrieved ? `, ${t.retrieved} memories` : ""}`;
+    if (t.tool === "complete_order") { delete orders[t.agent_id]; renderCrew(); }
+    if (t.tool === "say") {
+      addEntry("speech", t.agent_id, `says "${argOf(t, "text")}"`, `${secs}s`);
+      return;
+    }
+    let args = "";
+    try {
+      args = Object.values(JSON.parse(t.args || "{}")).filter((v) => typeof v !== "object").join(", ");
+    } catch { /* ignore */ }
+    const tag = `${t.tool}${args ? ` ${args}` : ""}, ${secs}s${t.retrieved ? `, ${t.retrieved} memories` : ""}`;
     addEntry("", t.agent_id, t.text || "(no reasoning given)", tag);
   }
 
   function onEvent(e) {
+    if (!e) return;
     if (e.type === "action_rejected") {
-      const stale = e.staleness_ticks ? `, decided ${(e.staleness_ticks / 20).toFixed(1)}s earlier` : "";
-      addEntry("rejected", e.agent_id, `${e.action} rejected: ${REASONS[e.reason] || e.reason}`, stale.slice(2));
+      const stale = e.staleness_ticks ? `decided ${(e.staleness_ticks / 20).toFixed(1)}s earlier` : "";
+      addEntry("rejected", e.agent_id, `${e.action} rejected: ${REASONS[e.reason] || e.reason}`, stale);
     } else if (e.type === "action_result") {
       addEntry("result", e.agent_id, e.detail);
-    } else if (e.type === "market_report") {
-      addEntry("result", e.agent_id, `checked the market: tool ${e.prices.tool}, ore ${e.prices.ore}`);
+    } else if (e.type === "ticket_in") {
+      addEntry("order-entry", e.agent_id, `new ticket: ${e.dish} (${e.open_tickets} on the rail)`);
+    } else if (e.type === "walkout") {
+      addEntry("rejected", e.agent_id, `a table walked out waiting for ${e.dish}`);
     }
-    // "heard" and "received" are skipped: the speaker's thought and the giver's result already show them.
   }
 
   function onOrder(o) {
+    if (!o) return;
+    if (o.kind === "chat") { addChat("owner", o.agent_id, o.text); return; }
     if (o.agent_id === "all") Object.keys(NAMES).forEach((id) => { orders[id] = o.text; });
     else orders[o.agent_id] = o.text;
-    renderVillagers();
-    addEntry("order-entry", "Overseer", `to ${NAMES[o.agent_id] || "everyone"}: ${o.text}`);
+    renderCrew();
+    addEntry("order-entry", "Owner", `to ${NAMES[o.agent_id] || "the kitchen"}: ${o.text}`);
   }
 
   // ------------------------------------------------------------ websocket
@@ -370,18 +502,42 @@
     ws.onmessage = (m) => {
       let msg;
       try { msg = JSON.parse(m.data); } catch { return; }
-      if (msg.type === "snapshot") applySnapshot(msg.data);
-      else if (msg.type === "thought") onThought(msg.data);
-      else if (msg.type === "event") onEvent(msg.data);
-      else if (msg.type === "order") onOrder(msg.data);
+      try {
+        if (msg.type === "snapshot") applySnapshot(msg.data);
+        else if (msg.type === "thought") onThought(msg.data);
+        else if (msg.type === "event") onEvent(msg.data);
+        else if (msg.type === "order") onOrder(msg.data);
+      } catch (err) {
+        console.error("message handler failed", msg && msg.type, err);
+      }
     };
   }
 
-  // ------------------------------------------------------------ order form
+  // ------------------------------------------------------------ the form
 
   const form = $("orderForm");
   const text = $("orderText");
   const err = $("orderError");
+  const modeOf = () => document.querySelector('input[name="mode"]:checked').value;
+
+  document.querySelectorAll('input[name="mode"]').forEach((r) =>
+    r.addEventListener("change", () => {
+      const chat = modeOf() === "chat";
+      $("sendBtn").textContent = chat ? "Ask" : "Send order";
+      text.placeholder = chat ? "What are you working on right now?"
+                              : "Drop everything and get the two oldest tickets out";
+      updateChatWith();
+    }));
+
+  $("orderAgent").addEventListener("change", (e) => {
+    selected = e.target.value;
+    renderCrew();
+    updateChatWith();
+    renderThread(selected);
+  });
+
+  $("tabChronicle").addEventListener("click", () => showTab("chronicle"));
+  $("tabChat").addEventListener("click", () => showTab("chat"));
 
   text.addEventListener("input", () => { err.textContent = ""; });
   text.addEventListener("keydown", (e) => {
@@ -391,17 +547,19 @@
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const body = text.value.trim();
-    if (!body) { err.textContent = "Write an order first."; return; }
+    if (!body) { err.textContent = "Write something first."; return; }
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      err.textContent = "Not connected to the gateway. Check that the gateway is running on port 8080.";
+      err.textContent = "Not connected to the gateway. Check that it's running on port 8080.";
       return;
     }
-    ws.send(JSON.stringify({ type: "order", agent_id: $("orderAgent").value, text: body }));
+    const mode = modeOf();
+    ws.send(JSON.stringify({ type: mode, agent_id: $("orderAgent").value, text: body }));
     text.value = "";
+    if (mode === "chat") showTab("chat");
   });
 
   window.addEventListener("resize", resize);
-  renderVillagers();
+  updateChatWith();
   connect();
   requestAnimationFrame(frame);
 })();

@@ -34,12 +34,29 @@ type Event struct {
 	Location       string               `json:"location,omitempty"`
 	Target         string               `json:"target,omitempty"`
 	From           string               `json:"from,omitempty"`
+	By             string               `json:"by,omitempty"`
 	To             string               `json:"to,omitempty"`
 	Text           string               `json:"text,omitempty"`
 	Item           string               `json:"item,omitempty"`
 	StalenessTicks int64                `json:"staleness_ticks,omitempty"`
+	Dish           string               `json:"dish,omitempty"`
+	TicketID       int                  `json:"ticket_id,omitempty"`
+	OpenTickets    int                  `json:"open_tickets,omitempty"`
+	Stock          int                  `json:"stock,omitempty"`
+	Served         int                  `json:"served,omitempty"`
+	Walkouts       int                  `json:"walkouts,omitempty"`
+	Menu           []string             `json:"menu,omitempty"`
+	Tickets        []Ticket             `json:"tickets,omitempty"`
 	Prices         map[string]float64   `json:"prices,omitempty"`
 	History        map[string][]float64 `json:"history,omitempty"`
+}
+
+// Ticket is one order waiting on the rail.
+type Ticket struct {
+	ID       int    `json:"id"`
+	Dish     string `json:"dish"`
+	WaitingS int    `json:"waiting_s"`
+	DueInS   int    `json:"due_in_s"`
 }
 
 // Action is a request from a brain. The engine may reject it.
@@ -49,15 +66,18 @@ type Action struct {
 	BasedOnTick int64  `json:"based_on_tick"`
 	DecisionID  string `json:"decision_id"`
 	Target      string `json:"target,omitempty"`
+	Dish        string `json:"dish,omitempty"`
 	Item        string `json:"item,omitempty"`
 	To          string `json:"to,omitempty"`
 	Text        string `json:"text,omitempty"`
 }
 
-// OverseerCommand is what you type in the browser chat box.
+// OverseerCommand is what you type in the browser. Kind is "order" (a standing
+// instruction they work on) or "chat" (a question they answer in character).
 type OverseerCommand struct {
 	AgentID string `json:"agent_id"`
 	Text    string `json:"text"`
+	Kind    string `json:"kind,omitempty"`
 	TS      int64  `json:"ts"`
 }
 

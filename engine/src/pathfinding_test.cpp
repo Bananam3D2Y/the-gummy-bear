@@ -1,5 +1,5 @@
 // Run: ./build/pathfinding_test map.txt
-// Prints the map with the A* path from the mine (M) to the market (K) drawn as '*'.
+// Prints the map with the A* path from the walk-in (W) to the pass (P) drawn as '*'.
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -23,17 +23,17 @@ int main(int argc, char** argv) {
   Point from{}, to{};
   for (int y = 0; y < grid.height; ++y)
     for (int x = 0; x < grid.width; ++x) {
-      if (grid.at(x, y) == 'M') from = {x, y};
-      if (grid.at(x, y) == 'K') to = {x, y};
+      if (grid.at(x, y) == 'W') from = {x, y};   // walk-in
+      if (grid.at(x, y) == 'P') to = {x, y};     // the pass
     }
 
   auto route = astar(grid, from, to);
   if (route.empty()) {
-    std::cerr << "FAIL: no path from mine to market\n";
+    std::cerr << "FAIL: no path from walk-in to pass\n";
     return 1;
   }
   for (auto p : route)
-    if (grid.rows[p.y][p.x] != 'K') grid.rows[p.y][p.x] = '*';
+    if (grid.rows[p.y][p.x] != 'P') grid.rows[p.y][p.x] = '*';
   for (auto& r : grid.rows) std::cout << r << "\n";
   std::cout << "OK: path length " << route.size() << " (manhattan lower bound "
             << manhattan(from, to) << ")\n";

@@ -21,6 +21,7 @@ std::string env_or(const char* name, const std::string& fallback) {
 int main() {
   const std::string brokers = env_or("KAFKA_BROKERS", "localhost:9092");
   const std::string map_path = env_or("MAP_PATH", "map.txt");
+  const std::string cast_path = env_or("CAST_PATH", "../cast.json");
   const int metrics_port = std::stoi(env_or("METRICS_PORT", "9100"));
 
   std::signal(SIGINT, on_signal);
@@ -32,7 +33,11 @@ int main() {
     std::cerr << "[engine] " << err << "\n";
     return 1;
   }
-  world.spawn_agents();
+  if (!world.load_cast(cast_path, err)) {
+    std::cerr << "[engine] " << err << "\n";
+    return 1;
+  }
+  world.spawn_cast();
 
   Metrics metrics;
   metrics.start(metrics_port);
@@ -43,7 +48,7 @@ int main() {
     return 1;
   }
   std::cout << "[engine] running: brokers=" << brokers << " metrics=:" << metrics_port
-            << " agents=" << world.agent_count() << "\n";
+            << " cooks=" << world.cook_count() << "\n";
 
   // Fixed timestep: every tick is 50 ms of simulated time, no matter how long the work took.
   using clock = std::chrono::steady_clock;
@@ -72,8 +77,8 @@ int main() {
 
     const double took = std::chrono::duration<double>(clock::now() - t0).count();
     metrics.observe_tick(took);
-    metrics.set_gauges(world.agent_count(), world.mine_stock(), world.tick(),
-                       kafka.parse_errors(), kafka.produce_errors());
+    metrics.set_gauges(world.cook_count(), world.stock(), world.open_tickets(), world.served(),
+                       world.walkouts(), world.tick(), kafka.parse_errors(), kafka.produce_errors());
 
     next += tick_len;
     const auto now = clock::now();

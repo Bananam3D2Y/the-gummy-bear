@@ -128,6 +128,19 @@ func (s *Store) Remember(agent string, tick int64, text string) {
 	}
 }
 
+// RememberShared stores something every character can retrieve: a new recipe,
+// a decision that changes how the kitchen works.
+func (s *Store) RememberShared(kind string, tick int64, text string) {
+	if !s.Enabled() {
+		return
+	}
+	select {
+	case s.queue <- pending{kind: kind, agent: "all", text: text, tick: tick}:
+	default:
+		metrics.RAGDropped.Inc()
+	}
+}
+
 // RunWriter batches queued memories (up to 16 per embedding call, flushed every
 // 5s) so storing memories costs a few embedding requests per minute, not dozens.
 func (s *Store) RunWriter(ctx context.Context) {

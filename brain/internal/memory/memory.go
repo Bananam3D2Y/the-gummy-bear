@@ -44,6 +44,28 @@ func (s *Store) Recent(ctx context.Context, agent string, n int) ([]string, erro
 	return items, nil
 }
 
+const MaxChatTurns = 12
+
+func chatKey(agent string) string { return "agent:" + agent + ":chat" }
+
+// AddChat appends one line of the running conversation with the Owner.
+func (s *Store) AddChat(ctx context.Context, agent, speaker, text string) error {
+	pipe := s.rdb.TxPipeline()
+	pipe.RPush(ctx, chatKey(agent), speaker+": "+text)
+	pipe.LTrim(ctx, chatKey(agent), -MaxChatTurns, -1)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// Chat returns the conversation so far, oldest first.
+func (s *Store) Chat(ctx context.Context, agent string) []string {
+	items, err := s.rdb.LRange(ctx, chatKey(agent), 0, -1).Result()
+	if err != nil {
+		return nil
+	}
+	return items
+}
+
 func (s *Store) SetField(ctx context.Context, agent, field, value string) error {
 	return s.rdb.HSet(ctx, stateKey(agent), field, value).Err()
 }

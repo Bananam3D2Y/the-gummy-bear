@@ -1,5 +1,5 @@
 {
-  "title": "WorldCraft",
+  "title": "WorldCraft Kitchen",
   "uid": "worldcraft",
   "schemaVersion": 39,
   "version": 1,
@@ -105,7 +105,7 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "Ore left in mine",
+      "title": "Prep in walk-in",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -124,8 +124,8 @@
             "type": "prometheus",
             "uid": "prom"
           },
-          "expr": "max(engine_mine_stock)",
-          "legendFormat": "ore"
+          "expr": "max(engine_stock)",
+          "legendFormat": "prep"
         }
       ],
       "fieldConfig": {
@@ -670,6 +670,142 @@
           },
           "expr": "sum(rag_memories_dropped_total)",
           "legendFormat": "dropped"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 21,
+      "type": "row",
+      "title": "Service (the rail)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 50,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Tickets open",
+      "description": "Tickets waiting on the rail. Climbing means the crew is behind.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 51,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom"
+          },
+          "expr": "max(engine_tickets_open)",
+          "legendFormat": "open"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Served vs walkouts per minute",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 51,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom"
+          },
+          "expr": "sum(rate(engine_tickets_served_total[5m]))*60",
+          "legendFormat": "served/min"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom"
+          },
+          "expr": "sum(rate(engine_walkouts_total[5m]))*60",
+          "legendFormat": "walkouts/min"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Walkouts total",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 51,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom"
+          },
+          "expr": "sum(engine_walkouts_total)",
+          "legendFormat": "walkouts"
         }
       ],
       "fieldConfig": {

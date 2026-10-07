@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WorldCraft: Emberfield</title>
+  <title>The Original Beef — WorldCraft Kitchen</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Pixelify+Sans:wght@400;600&display=swap" rel="stylesheet">
@@ -12,54 +12,67 @@
 <body>
   <main class="stage">
     <header class="bar">
-      <h1>Emberfield</h1>
+      <h1 id="restaurant">The Gummy Bear</h1>
       <p class="bar-meta">
-        <span id="tick">Waiting for the world</span>
+        <span id="clock">--:--</span>
+        <span id="tick">Waiting for service</span>
         <span id="conn" class="conn conn-down">Connecting</span>
       </p>
     </header>
     <div class="map-wrap" id="mapWrap">
-      <canvas id="map" aria-label="Village map. Villagers are drawn as colored circles."></canvas>
-      <p class="map-empty" id="mapEmpty">Start the engine to see the village. The map appears as soon as the first snapshot arrives.</p>
+      <canvas id="map" aria-label="Kitchen floor. Cooks are drawn as colored circles."></canvas>
+      <p class="map-empty" id="mapEmpty">Start the engine to see the kitchen. The floor appears as soon as the first snapshot arrives.</p>
     </div>
   </main>
 
   <aside class="side">
     <section aria-labelledby="h-villagers">
-      <h2 id="h-villagers">Villagers</h2>
+      <h2 id="h-villagers">The crew</h2>
       <ul class="villagers" id="villagers"></ul>
     </section>
 
-    <section aria-labelledby="h-market">
-      <h2 id="h-market">Market</h2>
-      <div class="market">
-        <div class="price"><span>Tool</span><strong id="pTool">–</strong></div>
-        <div class="price"><span>Ore</span><strong id="pOre">–</strong></div>
-        <div class="price"><span>Ore in mine</span><strong id="mineStock">–</strong></div>
+    <section aria-labelledby="h-rail">
+      <h2 id="h-rail">The rail</h2>
+      <ol class="rail" id="rail"><li class="empty">Waiting for tickets.</li></ol>
+      <div class="service">
+        <div class="price"><span>Served</span><strong id="served">0</strong></div>
+        <div class="price"><span>Walkouts</span><strong id="walkouts">0</strong></div>
+        <div class="price"><span>Prep in walk-in</span><strong id="stock">0</strong></div>
       </div>
-      <canvas id="spark" height="44" aria-label="Tool price over the last few minutes"></canvas>
+      <p class="menu" id="menu"></p>
     </section>
 
-    <section class="chronicle-section" aria-labelledby="h-chronicle">
-      <h2 id="h-chronicle">Chronicle</h2>
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab active" id="tabChronicle" role="tab" aria-selected="true">Chronicle</button>
+      <button type="button" class="tab" id="tabChat" role="tab" aria-selected="false">Chat<span class="badge" id="chatBadge"></span></button>
+    </div>
+
+    <section class="chronicle-section" id="chronicleSection">
       <ol class="chronicle" id="chronicle">
-        <li class="empty">Nothing yet. Villagers start thinking a few seconds after the brain service starts.</li>
+        <li class="empty">Nothing yet. The crew starts thinking a few seconds after the brain service starts.</li>
+      </ol>
+    </section>
+
+    <section class="chat-section" id="chatSection" hidden>
+      <div class="section-head">
+        <span class="who-with" id="chatWith"></span>
+      </div>
+      <ol class="chat" id="chat">
+        <li class="empty">Pick someone, switch to Ask, and talk to them.</li>
       </ol>
     </section>
 
     <form class="order" id="orderForm" autocomplete="off">
-      <label for="orderAgent">Give an order to</label>
       <div class="order-row">
-        <select id="orderAgent">
-          <option value="blacksmith">Brann, blacksmith</option>
-          <option value="miner">Tove, miner</option>
-          <option value="merchant">Wren, merchant</option>
-          <option value="all">Everyone</option>
-        </select>
+        <select id="orderAgent" aria-label="Who to talk to"></select>
       </div>
-      <textarea id="orderText" rows="2" maxlength="500" placeholder="Stop forging and check whether tool prices are rising"></textarea>
+      <div class="mode" role="radiogroup" aria-label="Message type">
+        <label><input type="radio" name="mode" value="chat" checked> Ask</label>
+        <label><input type="radio" name="mode" value="order"> Order</label>
+      </div>
+      <textarea id="orderText" rows="2" maxlength="500" placeholder="What are you working on right now?"></textarea>
       <p class="order-error" id="orderError" role="alert"></p>
-      <button type="submit">Send order</button>
+      <button type="submit" id="sendBtn">Ask</button>
     </form>
   </aside>
 
