@@ -1,6 +1,6 @@
 # The Gummy Bear
 
-**A restaurant kitchen staffed by AI cooks, running on a real-time C++ simulation, Kafka, and Go.**
+**A restaurant kitchen staffed by AI cooks, inspired from the popular TV show , "THE BEAR", running on a real-time C++ simulation, Kafka, and Go.**
 
 Four LLM-driven cooks work a live dinner service: they read the ticket rail, pull stock from the walk-in, cook on the line, and serve at the pass, while the clock moves through lunch and dinner rushes. You are the Owner. You can watch, give orders, or open a chat with any cook and ask for a recipe.
 
