@@ -138,8 +138,10 @@ brain/
   lore/          kitchen knowledge loaded into the vector index
 web/             browser UI: map, chronicle, chat
 infra/           Docker Compose, Prometheus, Grafana dashboard
-docs/            message protocol and build notes
+docs/            design notes and the message protocol
 ```
+
+For the reasoning behind these choices, see the [design notes](docs/design.md) and the [message protocol](docs/protocol.md).
 
 ## What I learned
 

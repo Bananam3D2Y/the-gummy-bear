@@ -121,7 +121,7 @@ class World {
   std::vector<OutMessage> outbox_;
   std::vector<Ticket> tickets_;
   std::vector<std::string> menu_{"beef sandwich", "chopped salad", "fries", "chocolate cake"};
-  std::string restaurant_ = "The Original Beef";
+  std::string restaurant_ = "The Gummy Bear";
   long tick_ = 0;
   long next_ticket_tick_ = 4 * kTicksPerSecond;
   int next_ticket_id_ = 1;

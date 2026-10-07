@@ -1,4 +1,4 @@
-# How service works at The Original Beef
+# How service works at The Gummy Bear
 
 Every ticket that comes in names one dish. A ticket that waits too long becomes a walkout, and a walkout is worse than a late plate: the table leaves, the tip leaves with them, and the rail stays just as long.
 

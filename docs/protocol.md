@@ -1,7 +1,7 @@
-# WorldCraft Kitchen message protocol
+# The Gummy Bear message protocol
 
 All messages are JSON. Kafka keys are the character ID from `cast.json`
-(`carmy`, `sydney`, `richie`, `tina`, `marcus`, `ebraheim`, `fak`), except
+(`carmy`, `sydney`, `richie`, `tina`), except
 `world.snapshots`, which uses the key `world`.
 
 | Topic | Producer | Consumer(s) | Partitions |
@@ -16,10 +16,10 @@ All messages are JSON. Kafka keys are the character ID from `cast.json`
 
 ```json
 {"type":"move_to","agent_id":"tina","target":"line","based_on_tick":4120,"decision_id":"tina-1726"}
-{"type":"pull_stock","agent_id":"fak","based_on_tick":4120}
+{"type":"pull_stock","agent_id":"richie","based_on_tick":4120}
 {"type":"cook","agent_id":"tina","dish":"beef sandwich","based_on_tick":4120}
 {"type":"serve","agent_id":"carmy","dish":"beef sandwich","based_on_tick":4120}
-{"type":"hand","agent_id":"fak","item":"prep","to":"tina","based_on_tick":4120}
+{"type":"hand","agent_id":"richie","item":"prep","to":"tina","based_on_tick":4120}
 {"type":"say","agent_id":"richie","text":"Cousin, two on the rail!","to":"carmy","based_on_tick":4120}
 {"type":"check_tickets","agent_id":"richie","based_on_tick":4120}
 ```
@@ -73,7 +73,7 @@ Rejection reasons: `unknown_station`, `no_path`, `blocked`, `not_at_walkin`, `ou
 ## Snapshot (engine -> gateway, `world.snapshots`, 10 Hz)
 
 ```json
-{"type":"snapshot","tick":4300,"restaurant":"The Original Beef","width":40,"height":30,
+{"type":"snapshot","tick":4300,"restaurant":"The Gummy Bear","width":40,"height":30,
  "tiles":["####...","..."],
  "landmarks":{"walkin":[5,6],"line":[20,13],"pass":[20,19],"alley":[34,5]},
  "stock":7,"served":12,"walkouts":1,
